@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ai-interview
+  ai:
+    openai:
+      # DeepSeek 的 OpenAI 兼容接口地址
+      base-url: https://api.deepseek.com
+      # 从环境变量读取 API Key：运行前请先设置 DEEPSEEK_API_KEY（例如 PowerShell: $env:DEEPSEEK_API_KEY="sk-xxx"）
+      api-key: DEEPSEEK_API_KEY
+      chat:
+        options:
+          model: deepseek-chat
+          # 简历诊断场景调低采样温度，保证诊断报告严谨稳定（ChatController 中亦会显式指定 0.2）
+          temperature: 0.2

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 面试助手 · 带 RAG 增强的简历诊断</title>
+    <style>
+        body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; }
+        h1 { font-size: 22px; }
+        .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+        .toolbar input[type="file"] { font-size: 13px; }
+        textarea { width: 100%; min-height: 160px; padding: 10px; font-size: 14px; box-sizing: border-box; resize: vertical; font-family: inherit; line-height: 1.6; }
+        button { padding: 10px 24px; font-size: 14px; cursor: pointer; }
+        .hint { color: #888; font-size: 12px; margin: 6px 0 10px; }
+        #output { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px; padding: 16px; min-height: 120px; margin-top: 16px; line-height: 1.7; font-size: 14px; word-break: break-word; max-height: 72vh; overflow-y: auto; }
+        #output h3 { font-size: 17px; margin: 16px 0 6px; }
+        #output h4 { font-size: 15px; margin: 12px 0 4px; }
+        #output p { margin: 6px 0; }
+        #output ul, #output ol { margin: 6px 0 6px 1.6em; padding: 0; }
+        #output li { margin: 3px 0; }
+    </style>
+</head>
+<body>
+    <h1>AI 面试助手 · 带 RAG 增强的简历诊断</h1>
+
+    <div class="toolbar">
+        <input id="pdf" type="file" accept="application/pdf">
+        <button id="upload">上传 PDF 简历</button>
+        <span id="uploadStatus" class="hint"></span>
+    </div>
+
+    <textarea id="message" placeholder="上传 PDF 简历后文本会自动填入此框，可在末尾追加问题（例如：请按大厂评分标准诊断我的简历并模拟面试提问）"></textarea>
+    <div class="hint">提示：上传 PDF 后简历文本会自动填入上方输入框，可继续补充问题，再点击“发送”进行带 RAG 增强的对话。</div>
+    <button id="send">发送</button>
+    <hr>
+    <div id="output"></div>
+
+    <script>
+        const output = document.getElementById('output');
+        const input = document.getElementById('message');
+        const status = document.getElementById('uploadStatus');
+
+        document.getElementById('send').addEventListener('click', async () => {
+            output.innerHTML = '';
+            const msg = input.value.trim();
+            if (!msg) {
+                output.textContent = '请先输入内容或上传 PDF 简历';
+                return;
+            }
+            try {
+                const response = await fetch('/api/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: msg })
+                });
+                if (!response.ok || !response.body) {
+                    output.textContent = '请求失败：HTTP ' + response.status;
+                    return;
+                }
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+                let fullText = '';
+                let finished = false;
+                while (!finished) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const events = buffer.split('\n\n');
+                    buffer = events.pop();
+                    for (const event of events) {
+                        const data = parseSseData(event);
+                        if (data === '[DONE]') { finished = true; break; }
+                        if (data !== null) fullText += data;
+                    }
+                    renderMarkdown(fullText);
+                }
+                renderMarkdown(fullText);
+            } catch (err) {
+                output.textContent = '请求失败：' + err.message;
+            }
+        });
+
+        function parseSseData(event) {
+            let data = '';
+            for (const line of event.split('\n')) {
+                if (line.startsWith('data:')) {
+                    let val = line.slice(5);
+                    if (val.startsWith(' ')) val = val.slice(1);
+                    data += val + '\n';
+                }
+            }
+            if (data === '') return null;
+            return data.slice(0, -1);
+        }
+
+        function renderMarkdown(text) {
+            output.innerHTML = markdownToHtml(text);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function inlineMarkdown(s) {
+            return escapeHtml(s).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        }
+
+        function markdownToHtml(md) {
+            const lines = md.split('\n');
+            let html = '';
+            let listType = null;
+            const closeList = () => {
+                if (listType === 'ol') html += '</ol>';
+                else if (listType === 'ul') html += '</ul>';
+                listType = null;
+            };
+            for (const raw of lines) {
+                const line = raw.replace(/\r$/, '');
+                let m;
+                if ((m = line.match(/^###\s+(.*)$/))) { closeList(); html += '<h4>' + inlineMarkdown(m[1]) + '</h4>'; continue; }
+                if ((m = line.match(/^##\s+(.*)$/))) { closeList(); html += '<h3>' + inlineMarkdown(m[1]) + '</h3>'; continue; }
+                if ((m = line.match(/^#\s+(.*)$/))) { closeList(); html += '<h2>' + inlineMarkdown(m[1]) + '</h2>'; continue; }
+                if ((m = line.match(/^\d+[.)、．]\s*(.*)$/))) { if (listType !== 'ol') { closeList(); html += '<ol>'; listType = 'ol'; } html += '<li>' + inlineMarkdown(m[1]) + '</li>'; continue; }
+                if ((m = line.match(/^[-*•·]\s+(.*)$/))) { if (listType !== 'ul') { closeList(); html += '<ul>'; listType = 'ul'; } html += '<li>' + inlineMarkdown(m[1]) + '</li>'; continue; }
+                if (line.trim() === '') { closeList(); continue; }
+                closeList();
+                html += '<p>' + inlineMarkdown(line) + '</p>';
+            }
+            closeList();
+            return html;
+        }
+
+        document.getElementById('upload').addEventListener('click', () => {
+            const fileInput = document.getElementById('pdf');
+            if (!fileInput.files.length) {
+                status.textContent = '请先选择 PDF 文件';
+                return;
+            }
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            status.textContent = '解析中…';
+            fetch('/api/resume/upload', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        input.value = data.text;
+                        status.textContent = '解析成功：' + data.filename;
+                    } else {
+                        status.textContent = '解析失败：' + (data.message || '未知错误');
+                    }
+                })
+                .catch(err => { status.textContent = '解析失败：' + err.message; });
+        });
+    </script>
+</body>
+</html>
